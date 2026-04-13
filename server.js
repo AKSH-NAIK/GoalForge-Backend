@@ -54,6 +54,7 @@ Rules:
 - No explanations outside JSON
 - "week" must be like "Week 1", "Week 2"
 - Do NOT merge weeks (no "6-12")
+-"use_ai_for" must NOT be empty
 - "avoid_ai_for" must NOT be empty
 - "tips" must NOT be empty
 - "learn" must always have at least 2 items
