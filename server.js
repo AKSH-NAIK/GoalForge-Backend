@@ -1,12 +1,15 @@
 import express from "express";
+import cors from "cors";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
 dotenv.config();
 const app = express();
 
+app.use(cors());
+
 app.use(express.json());
 
-// route
+// routes
 app.get("/", (req, res) => {
   res.send("GoalForge Backend");
 });
@@ -77,12 +80,47 @@ const clean = raw.substring(
 
 const parsed = JSON.parse(clean);
 
+parsed.weeks.forEach(week => {
+
+  // SAFE normalize learn
+  week.learn = (week.learn || []).map(item =>
+    item && typeof item === "object" ? item.topic || "" : item || ""
+  );
+
+  // SAFE normalize tasks
+  week.tasks = (week.tasks || []).map(item =>
+    item && typeof item === "object" ? item.topic || "" : item || ""
+  );
+
+  // SAFE ai_help object
+  week.ai_help = week.ai_help || {};
+
+  week.ai_help.use_ai_for = (week.ai_help.use_ai_for || []).map(item =>
+    item && typeof item === "object" ? item.topic || "" : item || ""
+  );
+
+  week.ai_help.avoid_ai_for = (week.ai_help.avoid_ai_for || []).map(item =>
+    item && typeof item === "object" ? item.topic || "" : item || ""
+  );
+
+  week.ai_help.tips = (week.ai_help.tips || []).map(item =>
+    item && typeof item === "object" ? item.topic || "" : item || ""
+  );
+
+  if (week.ai_help.avoid_ai_for.length === 0) {
+    week.ai_help.avoid_ai_for = [
+      "Solving problems on your own",
+      "Debugging without AI assistance",
+      "Thinking through logic before coding"
+    ];
+  }
+});
+
 res.json({
   result: parsed
 });
 });
 
-// start server
 app.listen(5000, () => {
   console.log("Server running on port 5000");
 });
