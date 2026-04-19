@@ -11,6 +11,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  res.setTimeout(15000, () => {
+    res.status(503).json({ error: "Request timeout" });
+  });
+  next();
+});
+
 app.get("/", (req, res) => {
   res.send("GoalForge Backend");
 });
@@ -48,27 +55,23 @@ app.post("/api/generate-plan", async (req, res) => {
       return res.status(400).json({ error: "Goal and Duration are required." });
     }
 
-    // SAFE HANDLING
     const previousWeeksSafe = Array.isArray(previousWeeks) ? previousWeeks : [];
 
     const totalWeeks = convertToWeeks(duration);
-
-    // generate in phases
     const weeksToGenerate = Math.min(MAX_WEEKS_PER_PHASE, totalWeeks);
-
     const lastWeekNumber = previousWeeksSafe.length;
-    
-    // Instead of raw JSON, summarize past topics to save tokens and prevent repetition
+
     const pastTopics = previousWeeksSafe.flatMap(w => w.learn).filter(Boolean);
 
-    // ================= AI CALL =================
-    const response = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: `You are a strict career planner and AI mentor. Return ONLY valid JSON format representing the curriculum layout. Do not output markdown code blocks, just raw JSON.
+    let response;
+    try {
+      response = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are a strict career planner and AI mentor. Return ONLY valid JSON format representing the curriculum layout. Do not output markdown code blocks, just raw JSON.
 
 Format:
 {
@@ -88,10 +91,10 @@ Format:
     }
   ]
 }`
-        },
-        {
-          role: "user",
-          content: `CONTEXT:
+          },
+          {
+            role: "user",
+            content: `CONTEXT:
 - Generate EXACTLY ${weeksToGenerate} novel weeks.
 
 ${previousWeeksSafe.length > 0 ? `
@@ -123,15 +126,20 @@ Goal: ${goal}
 Duration: ${duration}
 Level: ${level}
 Knowledge: ${knowledge}`
-        }
-      ],
-    });
+          }
+        ],
+      });
+    } catch (err) {
+      console.error("Groq Error:", err);
+      return res.status(500).json({ error: "AI service failed" });
+    }
 
-    const raw = response.choices[0].message.content;
+    const raw = response?.choices?.[0]?.message?.content;
 
-    if (!raw) throw new Error("Empty AI response");
+    if (!raw) {
+      return res.status(500).json({ error: "Empty AI response" });
+    }
 
-    // ================= JSON EXTRACTION =================
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
 
@@ -155,7 +163,6 @@ Knowledge: ${knowledge}`
       }
     }
 
-    // ================= FIX LENGTH =================
     if (!parsed.weeks || parsed.weeks.length !== weeksToGenerate) {
       const fixed = [];
 
@@ -181,7 +188,6 @@ Knowledge: ${knowledge}`
       parsed.weeks = fixed;
     }
 
-    // ================= NORMALIZE + REMOVE DUPES =================
     const seen = new Set();
 
     parsed.weeks = parsed.weeks.map((week, i) => {
@@ -194,24 +200,36 @@ Knowledge: ${knowledge}`
         typeof x === "object" ? Object.values(x)[0] : x
       );
 
-      week.tasks = week.tasks.map(x =>
-        typeof x === "object" ? Object.values(x)[0] : x
-      );
+      // FIXED: preserve task structure
+      week.tasks = week.tasks.map(task => {
+        if (typeof task === "string") {
+          return { text: task, done: false };
+        }
+
+        return {
+          text:
+            task.text ||
+            task.task ||
+            task.description ||
+            task.title ||
+            Object.values(task)[0],
+          done: task.done || false
+        };
+      });
 
       if (week.tasks.length < 2) {
         week.tasks = [
-          "Build a real project",
-          "Apply concepts in real scenario"
+          { text: "Build a real project", done: false },
+          { text: "Apply concepts in real scenario", done: false }
         ];
       }
 
-      //  duplicate prevention
-      const key = JSON.stringify(week.tasks);
+      const key = JSON.stringify(week.tasks.map(t => t.text));
 
       if (seen.has(key)) {
         week.tasks = [
-          "Create a different project using same concept",
-          "Apply concept in new domain"
+          { text: "Create a different project using same concept", done: false },
+          { text: "Apply concept in new domain", done: false }
         ];
       }
 
@@ -237,7 +255,6 @@ Knowledge: ${knowledge}`
       return week;
     });
 
-    // ================= RESPONSE =================
     res.json({
       result: parsed,
       nextStartWeek: lastWeekNumber + weeksToGenerate
