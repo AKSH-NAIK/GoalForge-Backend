@@ -11,6 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// timeout safety
 app.use((req, res, next) => {
   res.setTimeout(15000, () => {
     res.status(503).json({ error: "Request timeout" });
@@ -64,6 +65,7 @@ app.post("/api/generate-plan", async (req, res) => {
     const pastTopics = previousWeeksSafe.flatMap(w => w.learn).filter(Boolean);
 
     let response;
+
     try {
       response = await groq.chat.completions.create({
         model: "llama-3.1-8b-instant",
@@ -71,7 +73,13 @@ app.post("/api/generate-plan", async (req, res) => {
         messages: [
           {
             role: "system",
-            content: `You are a strict career planner and AI mentor. Return ONLY valid JSON format representing the curriculum layout. Do not output markdown code blocks, just raw JSON.
+            content: `You are a strict career planner and AI mentor.
+
+Return ONLY valid JSON. No markdown.
+
+IMPORTANT:
+- Use EXACT key: "ai_help"
+- Never use "aiTips" or variations
 
 Format:
 {
@@ -81,12 +89,12 @@ Format:
     {
       "week": "Week Number",
       "goal": "Week Goal",
-      "learn": ["Topic 1", "Topic 2"],
-      "tasks": ["Task 1", "Task 2"],
+      "learn": ["Topic 1"],
+      "tasks": ["Task 1"],
       "ai_help": {
-        "use_ai_for": ["Tip 1"],
-        "avoid_ai_for": ["Warning 1"],
-        "tips": ["Tip 1"]
+        "use_ai_for": ["Tip"],
+        "avoid_ai_for": ["Warning"],
+        "tips": ["Advice"]
       }
     }
   ]
@@ -95,31 +103,23 @@ Format:
           {
             role: "user",
             content: `CONTEXT:
-- Generate EXACTLY ${weeksToGenerate} novel weeks.
+- Generate EXACTLY ${weeksToGenerate} weeks.
 
 ${previousWeeksSafe.length > 0 ? `
 CONTINUATION MODE:
-- User already completed ${lastWeekNumber} weeks.
-- Start from Week ${lastWeekNumber + 1}.
-- DO NOT summarize or repeat the following past topics: ${pastTopics.join(", ")}.
-- You must introduce progressively advanced concepts.
+- User completed ${lastWeekNumber} weeks
+- Start from Week ${lastWeekNumber + 1}
+- Avoid repeating: ${pastTopics.join(", ")}
 ` : `
 FRESH START:
-- Start from Week 1.
+- Start from Week 1
 `}
 
-STRICT RULES:
-- EXACTLY ${weeksToGenerate} weeks
+RULES:
 - No duplicates
-- No vague tasks
-
-PROGRESSION:
-- Increase difficulty gradually
-- End with real-world projects
-
-QUALITY:
 - 2–4 tasks per week
-- Practical + specific tasks
+- Increasing difficulty
+- End with real-world projects
 
 User Input:
 Goal: ${goal}
@@ -163,29 +163,22 @@ Knowledge: ${knowledge}`
       }
     }
 
+    // fallback if AI fails
     if (!parsed.weeks || parsed.weeks.length !== weeksToGenerate) {
-      const fixed = [];
-
-      for (let i = 0; i < weeksToGenerate; i++) {
-        fixed.push(
-          parsed.weeks?.[i] || {
-            week: `Week ${lastWeekNumber + i + 1}`,
-            goal: "Apply concepts in real-world scenarios",
-            learn: ["Advanced topic", "System design"],
-            tasks: [
-              "Build a real-world project",
-              "Implement production feature"
-            ],
-            ai_help: {
-              use_ai_for: ["Debugging"],
-              avoid_ai_for: ["Copying blindly"],
-              tips: ["Stay consistent"]
-            }
-          }
-        );
-      }
-
-      parsed.weeks = fixed;
+      parsed.weeks = Array.from({ length: weeksToGenerate }, (_, i) => ({
+        week: `Week ${lastWeekNumber + i + 1}`,
+        goal: "Apply concepts in real-world scenarios",
+        learn: ["Advanced topic"],
+        tasks: [
+          { text: "Build a project", done: false },
+          { text: "Apply concepts", done: false }
+        ],
+        ai_help: {
+          use_ai_for: [],
+          avoid_ai_for: [],
+          tips: []
+        }
+      }));
     }
 
     const seen = new Set();
@@ -196,11 +189,12 @@ Knowledge: ${knowledge}`
       week.learn = Array.isArray(week.learn) ? week.learn : [];
       week.tasks = Array.isArray(week.tasks) ? week.tasks : [];
 
+      // normalize learn
       week.learn = week.learn.map(x =>
         typeof x === "object" ? Object.values(x)[0] : x
       );
 
-      // FIXED: preserve task structure
+      // normalize tasks
       week.tasks = week.tasks.map(task => {
         if (typeof task === "string") {
           return { text: task, done: false };
@@ -219,8 +213,8 @@ Knowledge: ${knowledge}`
 
       if (week.tasks.length < 2) {
         week.tasks = [
-          { text: "Build a real project", done: false },
-          { text: "Apply concepts in real scenario", done: false }
+          { text: "Build a project", done: false },
+          { text: "Apply concepts", done: false }
         ];
       }
 
@@ -228,29 +222,32 @@ Knowledge: ${knowledge}`
 
       if (seen.has(key)) {
         week.tasks = [
-          { text: "Create a different project using same concept", done: false },
-          { text: "Apply concept in new domain", done: false }
+          { text: "Try a different project", done: false },
+          { text: "Apply in new domain", done: false }
         ];
       }
 
       seen.add(key);
 
+  
+      if (!week.ai_help && week.aiTips) {
+        week.ai_help = week.aiTips;
+      }
+
       week.ai_help = week.ai_help || {};
 
-      week.ai_help.use_ai_for =
-        week.ai_help.use_ai_for?.length
-          ? week.ai_help.use_ai_for
-          : ["Understanding concepts"];
+      
+      week.ai_help.use_ai_for = Array.isArray(week.ai_help.use_ai_for)
+        ? week.ai_help.use_ai_for
+        : [];
 
-      week.ai_help.avoid_ai_for =
-        week.ai_help.avoid_ai_for?.length
-          ? week.ai_help.avoid_ai_for
-          : ["Copy pasting"];
+      week.ai_help.avoid_ai_for = Array.isArray(week.ai_help.avoid_ai_for)
+        ? week.ai_help.avoid_ai_for
+        : [];
 
-      week.ai_help.tips =
-        week.ai_help.tips?.length
-          ? week.ai_help.tips
-          : ["Stay consistent"];
+      week.ai_help.tips = Array.isArray(week.ai_help.tips)
+        ? week.ai_help.tips
+        : [];
 
       return week;
     });
@@ -269,6 +266,7 @@ Knowledge: ${knowledge}`
 });
 
 const PORT = process.env.PORT || 5000;
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
